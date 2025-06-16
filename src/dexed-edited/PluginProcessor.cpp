@@ -194,10 +194,11 @@ void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
     //// NASTY STUFF
 
     std::vector<std::string> cartFiles = findFilesWithExtension("/home/matthew/src/fm-project/DX7_AllTheWeb", "syx");
+    std::vector<std::size_t> progHashes;
     for (int ind=0;ind < cartFiles.size();++ind){
         DBG("Doing catridge render "<< cartFiles[ind]);
-
-        doCartridgeRender(juce::File(cartFiles[ind]), "/home/matthew/Desktop/dexed/", ind);
+        //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
+        doCartridgeRender(progHashes, juce::File(cartFiles[ind]), "/home/matthew/Desktop/dexed/", ind);
         // break; 
     }
     // juce::File cartFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
@@ -231,7 +232,23 @@ float normaliseAudioBuffer(juce::AudioBuffer<float>& buffer)
 }
 
 
-void DexedAudioProcessor::doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
+std::string DexedAudioProcessor::getParameterStateString() const {
+    std::ostringstream oss;
+    for (int i = 0; i < 156; ++i) { // 156 is the DX7 parameter count
+        oss << static_cast<int>(data[i]) << ",";
+    }
+    return oss.str();
+}
+
+std::size_t DexedAudioProcessor::getParameterStateHash() const {
+    std::string state = getParameterStateString();
+    return std::hash<std::string>{}(state);
+}
+
+
+
+
+void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind )
 {
     // === Load test cartridge ===
 
@@ -264,8 +281,19 @@ void DexedAudioProcessor::doCartridgeRender(std::vector<std::string>& doneNames,
     
     for (int pNum = 0; pNum < 32; ++pNum){
         std::cout << "Render program: " << cart.getProgramName(pNum) << std::endl;
-
         this->setCurrentProgram(pNum);
+        // check if we've loaded this exact program before
+        std::size_t paramHash = getParameterStateHash();
+
+        if (std::find(hashedParams.begin(), hashedParams.end(), paramHash) != hashedParams.end()){
+            // already done these exact params
+            std::cout << "Done already" << std::endl;
+            continue; 
+        }
+        // new program - store it 
+        hashedParams.push_back(paramHash);
+        
+        // now get on with the render...
         blockBuffer.clear();
         outputBuffer.clear();
         // === MIDI setup ===

@@ -135,6 +135,7 @@ class DexedAudioProcessor  : public AudioProcessor, public AsyncUpdater, public 
 
     float dpiScaleFactor = -1;
 
+
 public :
     // in MIDI units (0x4000 is neutral)
     Controllers controllers;
@@ -287,7 +288,13 @@ public :
     }    
 private:
     /** loads a cartridge from disk and renders it */
-    void doCartridgeRender( std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind);
+    void doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind );
+    /** converts the current parameter state into a string */
+    std::string getParameterStateString() const;
+    /** converts the current parameter state into a hash */
+    std::size_t getParameterStateHash() const;
+
+
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DexedAudioProcessor)
 

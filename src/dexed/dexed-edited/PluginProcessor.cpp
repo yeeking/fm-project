@@ -20,6 +20,7 @@
 
 #include <stdarg.h>
 #include <bitset>
+#include <filesystem>
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
@@ -129,7 +130,31 @@ DexedAudioProcessor::~DexedAudioProcessor() {
     TRACE("Bye");
     if (mtsClient) MTS_DeregisterClient(mtsClient);
 }
+namespace fs = std::filesystem;
 
+std::vector<std::string> findFilesWithExtension(const std::string& rootPath, const std::string& targetExt)
+{
+    std::vector<std::string> matchingFiles;
+    std::string lowerTargetExt = targetExt;
+    
+    // Ensure target extension starts with '.' and is lowercase
+    if (!lowerTargetExt.empty() && lowerTargetExt[0] != '.')
+        lowerTargetExt = "." + lowerTargetExt;
+
+    std::transform(lowerTargetExt.begin(), lowerTargetExt.end(), lowerTargetExt.begin(), ::tolower);
+
+    for (const auto& entry : fs::recursive_directory_iterator(rootPath)) {
+        if (entry.is_regular_file()) {
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            if (ext == lowerTargetExt) {
+                matchingFiles.push_back(entry.path().string());
+            }
+        }
+    }
+
+    return matchingFiles;
+}
 //==============================================================================
 void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     Freqlut::init(sampleRate);
@@ -164,7 +189,174 @@ void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
     
     nextMidi = new MidiMessage(0xF0);
 	midiMsg = new MidiMessage(0xF0);
+
+
+    //// NASTY STUFF
+
+    std::vector<std::string> cartFiles = findFilesWithExtension("/home/matthew/src/fm-project/DX7_AllTheWebClean", "syx");
+    std::vector<std::size_t> progHashes;
+    std::cout << "Found " << cartFiles.size() << " carts" << std::endl;
+    assert (false);
+    for (int ind=0;ind < cartFiles.size();++ind){
+        DBG("Doing catridge render "<< cartFiles[ind]);
+        //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
+        doCartridgeRender(progHashes, juce::File(cartFiles[ind]), "/home/matthew/Desktop/dexed/", ind);
+        // break; 
+    }
+    // juce::File cartFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+    //                           .getChildFile("Apr2001.SYX");
+
+    // doCartridgeRender(cartFile);
+    assert (false);
+
+
+
 }
+
+float normaliseAudioBuffer(juce::AudioBuffer<float>& buffer)
+{
+    float maxSample = 0.0f;
+
+    // Find absolute maximum sample value across all channels
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    {
+        float chMax = buffer.getMagnitude(ch, 0, buffer.getNumSamples());
+        maxSample = std::max(maxSample, chMax);
+    }
+
+    // Scale if max is not zero (avoid divide-by-zero)
+    if (maxSample > 0.0f)
+    {
+        float gain = 1.0f / maxSample;
+        buffer.applyGain(gain);
+    }
+    return maxSample; 
+}
+
+
+std::string DexedAudioProcessor::getParameterStateString() const {
+    std::ostringstream oss;
+    for (int i = 0; i < 156; ++i) { // 156 is the DX7 parameter count
+        oss << static_cast<int>(data[i]) << ",";
+    }
+    return oss.str();
+}
+
+std::size_t DexedAudioProcessor::getParameterStateHash() const {
+    std::string state = getParameterStateString();
+    return std::hash<std::string>{}(state);
+}
+
+
+
+
+void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind )
+{
+    // === Load test cartridge ===
+
+    if (!cartFile.existsAsFile()) {
+        std::cout << "Cart file not found " << cartFile.getFullPathName() << std::endl;
+        assert(false);
+    }
+
+    Cartridge cart;
+    int rc = cart.load(cartFile);
+    for (int i=0;i<32;++i){
+        std::cout << "Found program: " << cart.getProgramName(i) << std::endl;
+    }
+    this->loadCartridge(cart);
+    this->activeFileCartridge = cartFile;
+
+
+    // === Create two buffers ===
+    const int noteLengthSecs = 2;
+    const int renderLengthSecs = noteLengthSecs + 1;
+    
+    const int samplesPerBlock = 2048;
+    const int sampleRate = 44100;
+    const int numChannels = 2;
+    const int numBlocks = sampleRate * renderLengthSecs / samplesPerBlock;  // number of times to run processBlock
+    const int totalSamples = samplesPerBlock * numBlocks;
+    const int noteOnSample = 512;
+    const int noteOffSample = noteOnSample + (sampleRate * noteLengthSecs); 
+
+    juce::AudioBuffer<float> blockBuffer(numChannels, samplesPerBlock);
+    juce::AudioBuffer<float> outputBuffer(numChannels, totalSamples);
+    
+    for (int pNum = 0; pNum < 32; ++pNum){
+        std::cout << "Render program: " << cart.getProgramName(pNum) << std::endl;
+        this->setCurrentProgram(pNum);
+        // check if we've loaded this exact program before
+        std::size_t paramHash = getParameterStateHash();
+
+        if (std::find(hashedParams.begin(), hashedParams.end(), paramHash) != hashedParams.end()){
+            // already done these exact params
+            std::cout << "Done already" << std::endl;
+            continue; 
+        }
+        // new program - store it 
+        hashedParams.push_back(paramHash);
+        
+        // now get on with the render...
+        blockBuffer.clear();
+        outputBuffer.clear();
+        // === MIDI setup ===
+        juce::MidiBuffer midi;
+        bool noteOnSent = false;
+        bool noteOffSent = false; 
+        // === Run processBlock repeatedly and copy into big buffer ===
+        for (int i = 0; i < numBlocks; ++i) {
+            if (!noteOnSent && i * samplesPerBlock >= noteOnSample ){
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), 0);
+                noteOnSent = true; 
+            }
+            if (!noteOffSent && i * samplesPerBlock >= noteOffSample ){
+                midi.addEvent(juce::MidiMessage::noteOff(1, 60, (juce::uint8)0), 0);
+                noteOffSent = true; 
+            }
+            
+            blockBuffer.clear();
+
+            processBlock(blockBuffer, midi);
+            midi.clear(); 
+
+            for (int ch = 0; ch < numChannels; ++ch) {
+                outputBuffer.copyFrom(
+                    ch, i * samplesPerBlock,
+                    blockBuffer.getReadPointer(ch),
+                    samplesPerBlock
+                );
+            }
+
+        }
+        float max = normaliseAudioBuffer(outputBuffer);
+        if (max > 0) {
+        // === Write big buffer to WAV ===
+        juce::String filename = juce::String(outDir) + "/dexed_" + juce::String(ind) + "_" + juce::String(pNum) + ".wav";
+        juce::File outFile(filename);
+        // juce::File outFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+                                // .getChildFile("dexed_" + std::to_string(pNum) + ".wav");
+
+        std::cout << "Writing to  " << outFile.getFileName() << std::endl;
+        juce::WavAudioFormat format;
+        std::unique_ptr<juce::AudioFormatWriter> writer(
+            format.createWriterFor(outFile.createOutputStream().release(),
+                                sampleRate,
+                                (unsigned int)numChannels,
+                                16,
+                                {},
+                                0));
+        // void normaliseAudioBuffer(juce::AudioBuffer<float>& buffer)
+            if (writer != nullptr) {
+                writer->writeFromAudioSampleBuffer(outputBuffer, 0, totalSamples);
+                DBG("Wrote test audio to: " << outFile.getFullPathName());
+            } else {
+                DBG("Failed to write WAV file");
+            }
+        }
+    }
+}
+
 
 void DexedAudioProcessor::releaseResources() {
     currentNote = -1;

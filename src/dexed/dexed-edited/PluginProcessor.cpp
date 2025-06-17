@@ -193,23 +193,26 @@ void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
 
     //// NASTY STUFF
 
-    std::vector<std::string> cartFiles = findFilesWithExtension("/home/matthew/src/fm-project/DX7_AllTheWebClean", "syx");
-    std::vector<std::size_t> progHashes;
-    std::cout << "Found " << cartFiles.size() << " carts" << std::endl;
-    assert (false);
-    for (int ind=0;ind < cartFiles.size();++ind){
-        DBG("Doing catridge render "<< cartFiles[ind]);
-        //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
-        doCartridgeRender(progHashes, juce::File(cartFiles[ind]), "/home/matthew/Desktop/dexed/", ind);
-        // break; 
-    }
-    // juce::File cartFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
-    //                           .getChildFile("Apr2001.SYX");
+    if (JUCEApplicationBase::isStandaloneApp())
+    {
 
-    // doCartridgeRender(cartFile);
-    assert (false);
+        std::vector<std::string> cartFiles = findFilesWithExtension("/home/matthew/src/fm-project/DX7_AllTheWebClean", "syx");
+        std::vector<std::size_t> progHashes;
+        std::cout << "Found " << cartFiles.size() << " carts" << std::endl;
+        assert (false);
+        for (int ind=0;ind < cartFiles.size();++ind){
+            DBG("Doing catridge render "<< cartFiles[ind]);
+            //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
+            doCartridgeRender(progHashes, juce::File(cartFiles[ind]), "/home/matthew/Desktop/dexed/", ind);
+            // break; 
+        }
+        // juce::File cartFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+        //                           .getChildFile("Apr2001.SYX");
 
+        // doCartridgeRender(cartFile);
+        assert (false);
 
+}
 
 }
 

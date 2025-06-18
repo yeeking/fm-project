@@ -288,8 +288,18 @@ public :
     }    
 private:
     std::pair<std::string, std::string> promptForFolders();
-    /** loads a cartridge from disk and renders it */
-    void doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind );
+    /** loads a cartridge from disk, iterates over the programmes, plays the sent notes with each program then renders it to 
+     * a wav file in outDir, using 'ind' as part of the filename
+     */
+    void doCartridgeRender(
+        std::vector<std::size_t>& hashedParams,
+        juce::File cartFile,
+        std::string outDir,
+        int cartrideIndForFilename,
+        const std::vector<int>& midiNotes 
+    );
+
+    // void doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind );
     /** converts the current parameter state into a string */
     std::string getParameterStateString() const;
     /** converts the current parameter state into a hash */

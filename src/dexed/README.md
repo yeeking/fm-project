@@ -6,7 +6,7 @@ First build it:
 
 ```
 git clone https://github.com/asb2m10/dexed.git
-cp dexed-edited/* ./dexed/Source/
+cp -r dexed-edited/* ./dexed/
 cd dexed
 git submodule update --init --recursive
 cmake -B build .

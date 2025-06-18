@@ -155,6 +155,64 @@ std::vector<std::string> findFilesWithExtension(const std::string& rootPath, con
 
     return matchingFiles;
 }
+
+
+
+std::pair<std::string, std::string> DexedAudioProcessor::promptForFolders()
+{
+    namespace fs = std::filesystem;
+    std::string cartridgeFolder;
+    std::string renderFolder;
+
+    // Prompt for cartridge folder
+    while (true)
+    {
+        std::cout << "Enter the path to the cartridge folder: ";
+        std::getline(std::cin, cartridgeFolder);
+
+        fs::path cartridgePath(cartridgeFolder);
+        if (fs::exists(cartridgePath) && fs::is_directory(cartridgePath))
+        {
+            auto syxFiles = findFilesWithExtension(cartridgePath, "syx");
+            if (syxFiles.size() > 0)
+            {
+                std::cout << "Found " << syxFiles.size() << " carts" << std::endl;
+                break;
+            }
+            else
+            {
+                std::cout << "No .syx files found in the folder. Please try again.\n";
+            }
+        }
+        else
+        {
+            std::cout << "Invalid folder path. Please try again.\n";
+        }
+    }
+
+    // Prompt for render folder
+    while (true)
+    {
+        std::cout << "Enter the path to the render output folder: ";
+        std::getline(std::cin, renderFolder);
+
+        fs::path renderPath(renderFolder);
+        if (fs::exists(renderPath) && fs::is_directory(renderPath))
+        {
+            // Create subfolder
+            fs::path renderSubfolder = renderPath / "cartridge_renders";
+            fs::create_directories(renderSubfolder);
+            return { cartridgeFolder, renderSubfolder.string() };
+        }
+        else
+        {
+            std::cout << "Invalid folder path. Please try again.\n";
+        }
+    }
+}
+
+
+
 //==============================================================================
 void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     Freqlut::init(sampleRate);
@@ -196,14 +254,17 @@ void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
     if (JUCEApplicationBase::isStandaloneApp())
     {
 
-        std::vector<std::string> cartFiles = findFilesWithExtension("/home/matthew/src/fm-project/DX7_AllTheWebClean", "syx");
+        std::pair<std::string, std::string> folders = promptForFolders();
+
+        std::vector<std::string> cartFiles = findFilesWithExtension(folders.first, "syx");
         std::vector<std::size_t> progHashes;
         std::cout << "Found " << cartFiles.size() << " carts" << std::endl;
-        assert (false);
         for (int ind=0;ind < cartFiles.size();++ind){
-            DBG("Doing catridge render "<< cartFiles[ind]);
+            float perc_done = 100 * (static_cast<float>(ind)/ static_cast<float>(cartFiles.size()));
+
+            DBG("Doing catridge render "<< cartFiles[ind] << ":"  << perc_done);
             //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
-            doCartridgeRender(progHashes, juce::File(cartFiles[ind]), "/home/matthew/Desktop/dexed/", ind);
+            doCartridgeRender(progHashes, juce::File(cartFiles[ind]), folders.second, ind);
             // break; 
         }
         // juce::File cartFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
@@ -212,7 +273,7 @@ void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
         // doCartridgeRender(cartFile);
         assert (false);
 
-}
+    }
 
 }
 
@@ -264,9 +325,9 @@ void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedPara
 
     Cartridge cart;
     int rc = cart.load(cartFile);
-    for (int i=0;i<32;++i){
-        std::cout << "Found program: " << cart.getProgramName(i) << std::endl;
-    }
+    // for (int i=0;i<32;++i){
+    //     std::cout << "Found program: " << cart.getProgramName(i) << std::endl;
+    // }
     this->loadCartridge(cart);
     this->activeFileCartridge = cartFile;
 
@@ -287,7 +348,7 @@ void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedPara
     juce::AudioBuffer<float> outputBuffer(numChannels, totalSamples);
     
     for (int pNum = 0; pNum < 32; ++pNum){
-        std::cout << "Render program: " << cart.getProgramName(pNum) << std::endl;
+        // std::cout << "Render program: " << cart.getProgramName(pNum) << std::endl;
         this->setCurrentProgram(pNum);
         // check if we've loaded this exact program before
         std::size_t paramHash = getParameterStateHash();
@@ -340,7 +401,7 @@ void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedPara
         // juce::File outFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
                                 // .getChildFile("dexed_" + std::to_string(pNum) + ".wav");
 
-        std::cout << "Writing to  " << outFile.getFileName() << std::endl;
+        // std::cout << "Writing to  " << outFile.getFileName() << std::endl;
         juce::WavAudioFormat format;
         std::unique_ptr<juce::AudioFormatWriter> writer(
             format.createWriterFor(outFile.createOutputStream().release(),
@@ -352,9 +413,9 @@ void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedPara
         // void normaliseAudioBuffer(juce::AudioBuffer<float>& buffer)
             if (writer != nullptr) {
                 writer->writeFromAudioSampleBuffer(outputBuffer, 0, totalSamples);
-                DBG("Wrote test audio to: " << outFile.getFullPathName());
+                // DBG("Wrote test audio to: " << outFile.getFullPathName());
             } else {
-                DBG("Failed to write WAV file");
+                // DBG("Failed to write WAV file");
             }
         }
     }

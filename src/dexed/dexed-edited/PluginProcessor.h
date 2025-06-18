@@ -287,6 +287,7 @@ public :
         return dpiScaleFactor;
     }    
 private:
+    std::pair<std::string, std::string> promptForFolders();
     /** loads a cartridge from disk and renders it */
     void doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind );
     /** converts the current parameter state into a string */

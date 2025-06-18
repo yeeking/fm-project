@@ -262,7 +262,8 @@ void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
         for (int ind=0;ind < cartFiles.size();++ind){
             float perc_done = 100 * (static_cast<float>(ind)/ static_cast<float>(cartFiles.size()));
 
-            DBG("Doing catridge render "<< cartFiles[ind] << ":"  << perc_done);
+            std::cout << "Doing catridge render "<< cartFiles[ind] << ":"  << perc_done << std::endl;
+            
             //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
             doCartridgeRender(progHashes, juce::File(cartFiles[ind]), folders.second, ind);
             // break; 
@@ -311,9 +312,6 @@ std::size_t DexedAudioProcessor::getParameterStateHash() const {
     return std::hash<std::string>{}(state);
 }
 
-
-
-
 void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind )
 {
     // === Load test cartridge ===
@@ -355,7 +353,7 @@ void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedPara
 
         if (std::find(hashedParams.begin(), hashedParams.end(), paramHash) != hashedParams.end()){
             // already done these exact params
-            std::cout << "Done already" << std::endl;
+            // std::cout << "Done already" << std::endl;
             continue; 
         }
         // new program - store it 

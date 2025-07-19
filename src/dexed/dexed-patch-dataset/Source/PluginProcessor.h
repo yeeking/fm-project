@@ -1,6 +1,6 @@
 /**
  *
- * Copyright (c) 2013-2017 Pascal Gauthier.
+ * Copyright (c) 2013-2025 Pascal Gauthier.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -47,9 +47,6 @@ struct ProcessorVoice {
     bool live;
 
     int mpePitchBend;
-    int mpePressure;
-    int mpeTimbre;
-    
     Dx7Note *dx7_note;
 };
 
@@ -134,7 +131,6 @@ class DexedAudioProcessor  : public AudioProcessor, public AsyncUpdater, public 
     void packOpSwitch();
 
     float dpiScaleFactor = -1;
-
 
 public :
     // in MIDI units (0x4000 is neutral)
@@ -255,6 +251,7 @@ public :
     static File dexedCartDir;
 
     Value lastCCUsed;
+    int lastActiveVoice = 0;
 
     MTSClient *mtsClient;
     std::shared_ptr<TuningState> synthTuningState;
@@ -287,6 +284,8 @@ public :
         return dpiScaleFactor;
     }    
 private:
+
+
     std::pair<std::string, std::string> promptForFolders();
     /** loads a cartridge from disk, iterates over the programmes, plays the sent notes with each program then renders it to 
      * a wav file in outDir, using 'ind' as part of the filename
@@ -299,7 +298,21 @@ private:
         const std::vector<int>& midiNotes 
     );
 
-    // void doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind );
+/** loads a cartridge from disk, iterates over the programmes, 
+ * reads the actual parameter settings
+ * resulting from that programme 
+ * then stores those to disk as a txt file
+ * avoids repeats by checking for pre-existing 
+ * params in hashedParams
+ */
+    void cartToParameterFiles(
+        std::vector<std::size_t>& hashedParams,
+        juce::File cartFile,
+        std::string outDir,
+        int cartrideIndForFilename    );
+
+
+        
     /** converts the current parameter state into a string */
     std::string getParameterStateString() const;
     /** converts the current parameter state into a hash */

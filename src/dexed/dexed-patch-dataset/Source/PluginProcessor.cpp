@@ -1,6 +1,6 @@
 /**
  *
- * Copyright (c) 2013-2018 Pascal Gauthier.
+ * Copyright (c) 2013-2025 Pascal Gauthier.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
  *
  */
 
+
 #include <stdarg.h>
 #include <bitset>
 #include <filesystem>
@@ -32,6 +33,7 @@
 #include "msfa/exp2.h"
 #include "msfa/env.h"
 #include "msfa/pitchenv.h"
+#include "msfa/porta.h"
 #include "msfa/aligned_buf.h"
 #include "msfa/fm_op_kernel.h"
 
@@ -63,73 +65,9 @@
 
 #endif
 
-//==============================================================================
-DexedAudioProcessor::DexedAudioProcessor()
-    : AudioProcessor(BusesProperties().withOutput("output", AudioChannelSet::stereo(), true)) {
-#ifdef DEBUG
-    
-    // avoid creating the log file if it is in standalone mode
-    if ( !JUCEApplication::isStandaloneApp() ) {
-        Logger *tmp = Logger::getCurrentLogger();
-        if ( tmp == NULL ) {
-            Logger::setCurrentLogger(FileLogger::createDateStampedLogger("Dexed", "DebugSession-", "log", "DexedAudioProcessor Created"));
-        }
-    }
-    TRACE("Hi");
-#endif
 
-    Exp2::init();
-    Tanh::init();
-    Sin::init();
+//// MYK stuff
 
-    synthTuningState = createStandardTuning();
-    synthTuningStateLast = createStandardTuning();
-    
-    lastStateSave = 0;
-    currentNote = -1;
-    engineType = -1;
-    
-    vuSignal = 0;
-    monoMode = 0;
-    
-    resolvAppDir();
-    
-    initCtrl();
-    sendSysexChange = true;
-    normalizeDxVelocity = false;
-    sysexComm.listener = this;
-    showKeyboard = true;
-    
-    memset(&voiceStatus, 0, sizeof(VoiceStatus));
-    setEngineType(DEXED_ENGINE_MARKI);
-    
-    controllers.values_[kControllerPitchRangeUp] = 3;
-    controllers.values_[kControllerPitchRangeDn] = 3;
-    controllers.values_[kControllerPitchStep] = 0;
-    controllers.masterTune = 0;
-    
-    loadPreference();
-
-    for (int note = 0; note < MAX_ACTIVE_NOTES; ++note) {
-        voices[note].dx7_note = NULL;
-    }
-    setCurrentProgram(0);    
-    nextMidi = NULL;
-    midiMsg = NULL;
-    
-    mtsClient = NULL;
-    mtsClient = MTS_RegisterClient();
-}
-
-DexedAudioProcessor::~DexedAudioProcessor() {
-    Logger *tmp = Logger::getCurrentLogger();
-	if ( tmp != NULL ) {
-		Logger::setCurrentLogger(NULL);
-		delete tmp;
-	}
-    TRACE("Bye");
-    if (mtsClient) MTS_DeregisterClient(mtsClient);
-}
 namespace fs = std::filesystem;
 
 std::vector<std::string> findFilesWithExtension(const std::string& rootPath, const std::string& targetExt)
@@ -156,132 +94,6 @@ std::vector<std::string> findFilesWithExtension(const std::string& rootPath, con
     return matchingFiles;
 }
 
-
-
-std::pair<std::string, std::string> DexedAudioProcessor::promptForFolders()
-{
-    namespace fs = std::filesystem;
-    std::string cartridgeFolder;
-    std::string renderFolder;
-
-    // Prompt for cartridge folder
-    while (true)
-    {
-        std::cout << "Enter the path to the cartridge folder: ";
-        std::getline(std::cin, cartridgeFolder);
-
-        fs::path cartridgePath(cartridgeFolder);
-        if (fs::exists(cartridgePath) && fs::is_directory(cartridgePath))
-        {
-            auto syxFiles = findFilesWithExtension(cartridgePath, "syx");
-            if (syxFiles.size() > 0)
-            {
-                std::cout << "Found " << syxFiles.size() << " carts" << std::endl;
-                break;
-            }
-            else
-            {
-                std::cout << "No .syx files found in the folder. Please try again.\n";
-            }
-        }
-        else
-        {
-            std::cout << "Invalid folder path. Please try again.\n";
-        }
-    }
-
-    // Prompt for render folder
-    while (true)
-    {
-        std::cout << "Enter the path to the render output folder: ";
-        std::getline(std::cin, renderFolder);
-
-        fs::path renderPath(renderFolder);
-        if (fs::exists(renderPath) && fs::is_directory(renderPath))
-        {
-            // Create subfolder
-            fs::path renderSubfolder = renderPath / "cartridge_renders";
-            fs::create_directories(renderSubfolder);
-            return { cartridgeFolder, renderSubfolder.string() };
-        }
-        else
-        {
-            std::cout << "Invalid folder path. Please try again.\n";
-        }
-    }
-}
-
-
-
-//==============================================================================
-void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
-    Freqlut::init(sampleRate);
-    Lfo::init(sampleRate);
-    PitchEnv::init(sampleRate);
-    Env::init_sr(sampleRate);
-    fx.init(sampleRate);
-
-    vuDecayFactor = VuMeterOutput::getDecayFactor(sampleRate);
-    
-    for (int note = 0; note < MAX_ACTIVE_NOTES; ++note) {
-        voices[note].dx7_note = new Dx7Note(synthTuningState, mtsClient);
-        voices[note].keydown = false;
-        voices[note].sustained = false;
-        voices[note].live = false;
-    }
-
-    currentNote = 0;
-    controllers.values_[kControllerPitch] = 0x2000;
-    controllers.modwheel_cc = 0;
-    controllers.foot_cc = 0;
-    controllers.breath_cc = 0;
-    controllers.aftertouch_cc = 0;
-	controllers.refresh(); 
-
-    sustain = false;
-    extra_buf_size = 0;
-
-    keyboardState.reset();
-    
-    lfo.reset(data + 137);
-    
-    nextMidi = new MidiMessage(0xF0);
-	midiMsg = new MidiMessage(0xF0);
-
-
-    //// NASTY STUFF
-
-    if (JUCEApplicationBase::isStandaloneApp())
-    {
-
-        std::pair<std::string, std::string> folders = promptForFolders();
-
-        std::vector<std::string> cartFiles = findFilesWithExtension(folders.first, "syx");
-        std::vector<std::size_t> progHashes;
-        std::cout << "Found " << cartFiles.size() << " carts" << std::endl;
-        for (int ind=0;ind < cartFiles.size();++ind){
-            float perc_done = 100 * (static_cast<float>(ind)/ static_cast<float>(cartFiles.size()));
-
-            std::cout << "Doing catridge render "<< cartFiles[ind] << ":"  << perc_done << std::endl;
-            
-            //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
-            // doCartridgeRender(progHashes, juce::File(cartFiles[ind]), folders.second, ind);
-            doCartridgeRender(progHashes, juce::File(cartFiles[ind]), folders.second, ind, {32, 50, 60});
-            
-            // break; 
-        }
-        int rendered = findFilesWithExtension(folders.second, "wav").size();
-        std::cout << "Rendered " << rendered << " wav files to " << folders.second << std::endl;
-        // juce::File cartFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
-        //                           .getChildFile("Apr2001.SYX");
-
-        // doCartridgeRender(cartFile);
-        assert (false);
-
-    }
-
-}
-
 float normaliseAudioBuffer(juce::AudioBuffer<float>& buffer)
 {
     float maxSample = 0.0f;
@@ -303,18 +115,46 @@ float normaliseAudioBuffer(juce::AudioBuffer<float>& buffer)
 }
 
 
-std::string DexedAudioProcessor::getParameterStateString() const {
-    std::ostringstream oss;
-    for (int i = 0; i < 156; ++i) { // 156 is the DX7 parameter count
-        oss << static_cast<int>(data[i]) << ",";
+void DexedAudioProcessor::cartToParameterFiles(
+std::vector<std::size_t>& hashedParams,
+juce::File cartFile,
+std::string outDir,
+int cartrideIndForFilename    )
+{
+    if (!cartFile.existsAsFile()) {
+        std::cout << "Cart file not found " << cartFile.getFullPathName() << std::endl;
+        assert(false);
     }
-    return oss.str();
+
+    Cartridge cart;
+    int rc = cart.load(cartFile);
+    this->loadCartridge(cart);
+    this->activeFileCartridge = cartFile;
+    for (int pNum = 0; pNum < 32; ++pNum) {
+        
+        this->setCurrentProgram(pNum);
+        std::size_t paramHash = getParameterStateHash();
+
+        if (std::find(hashedParams.begin(), hashedParams.end(), paramHash) != hashedParams.end()) {
+            continue;
+        }
+        hashedParams.push_back(paramHash);
+
+        juce::String name = this->getProgramName(pNum);
+
+        juce::String filename = juce::String(outDir) + "/dexed_" + juce::String(cartrideIndForFilename) + "_" + juce::String(pNum) + "_" + name + ".txt";
+        juce::File outFile(filename);
+
+        std::vector<float> pluginParams;
+        for (int pInd = 0; pInd < this->getNumParameters(); ++pInd){
+
+            pluginParams.push_back(this->getParameter(pInd));
+            
+        }
+        std::cout << "Saving params to file " << filename << std::endl;
+    }
 }
 
-std::size_t DexedAudioProcessor::getParameterStateHash() const {
-    std::string state = getParameterStateString();
-    return std::hash<std::string>{}(state);
-}
 
 void DexedAudioProcessor::doCartridgeRender(
     std::vector<std::size_t>& hashedParams,
@@ -420,114 +260,163 @@ void DexedAudioProcessor::doCartridgeRender(
     }
 }
 
+std::string DexedAudioProcessor::getParameterStateString() const {
+    std::ostringstream oss;
+    for (int i = 0; i < 156; ++i) { // 156 is the DX7 parameter count
+        oss << static_cast<int>(data[i]) << ",";
+    }
+    return oss.str();
+}
 
-// void DexedAudioProcessor::doCartridgeRender(std::vector<std::size_t>& hashedParams, juce::File cartFile, std::string outDir, int ind )
-// {
-//     // === Load test cartridge ===
-
-//     if (!cartFile.existsAsFile()) {
-//         std::cout << "Cart file not found " << cartFile.getFullPathName() << std::endl;
-//         assert(false);
-//     }
-
-//     Cartridge cart;
-//     int rc = cart.load(cartFile);
-//     // for (int i=0;i<32;++i){
-//     //     std::cout << "Found program: " << cart.getProgramName(i) << std::endl;
-//     // }
-//     this->loadCartridge(cart);
-//     this->activeFileCartridge = cartFile;
+std::size_t DexedAudioProcessor::getParameterStateHash() const {
+    std::string state = getParameterStateString();
+    return std::hash<std::string>{}(state);
+}
 
 
-//     // === Create two buffers ===
-//     const int noteLengthSecs = 2;
-//     const int renderLengthSecs = noteLengthSecs + 1;
+
+
+
+
+//// end MYK stuff
+
+
+//==============================================================================
+DexedAudioProcessor::DexedAudioProcessor()
+    : AudioProcessor(BusesProperties().withOutput("output", AudioChannelSet::stereo(), true)) {
+#ifdef DEBUG
+    // avoid creating the log file if it is in standalone mode
+    if ( !JUCEApplication::isStandaloneApp() ) {
+        Logger *tmp = Logger::getCurrentLogger();
+        if ( tmp == NULL ) {
+            Logger::setCurrentLogger(FileLogger::createDateStampedLogger("Dexed", "DebugSession-", "log", "DexedAudioProcessor Created"));
+        }
+    }
+    TRACE("Hi");
+#endif
+
+    Exp2::init();
+    Tanh::init();
+    Sin::init();
+
+    synthTuningState = createStandardTuning();
+    synthTuningStateLast = createStandardTuning();
     
-//     const int samplesPerBlock = 2048;
-//     const int sampleRate = 44100;
-//     const int numChannels = 2;
-//     const int numBlocks = sampleRate * renderLengthSecs / samplesPerBlock;  // number of times to run processBlock
-//     const int totalSamples = samplesPerBlock * numBlocks;
-//     const int noteOnSample = 512;
-//     const int noteOffSample = noteOnSample + (sampleRate * noteLengthSecs); 
-
-//     juce::AudioBuffer<float> blockBuffer(numChannels, samplesPerBlock);
-//     juce::AudioBuffer<float> outputBuffer(numChannels, totalSamples);
+    lastStateSave = 0;
+    currentNote = -1;
+    engineType = -1;
     
-//     for (int pNum = 0; pNum < 32; ++pNum){
-//         // std::cout << "Render program: " << cart.getProgramName(pNum) << std::endl;
-//         this->setCurrentProgram(pNum);
-//         // check if we've loaded this exact program before
-//         std::size_t paramHash = getParameterStateHash();
+    vuSignal = 0;
+    monoMode = 0;
 
-//         if (std::find(hashedParams.begin(), hashedParams.end(), paramHash) != hashedParams.end()){
-//             // already done these exact params
-//             // std::cout << "Done already" << std::endl;
-//             continue; 
-//         }
-//         // new program - store it 
-//         hashedParams.push_back(paramHash);
-        
-//         // now get on with the render...
-//         blockBuffer.clear();
-//         outputBuffer.clear();
-//         // === MIDI setup ===
-//         juce::MidiBuffer midi;
-//         bool noteOnSent = false;
-//         bool noteOffSent = false; 
-//         // === Run processBlock repeatedly and copy into big buffer ===
-//         for (int i = 0; i < numBlocks; ++i) {
-//             if (!noteOnSent && i * samplesPerBlock >= noteOnSample ){
-//                 midi.addEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), 0);
-//                 noteOnSent = true; 
-//             }
-//             if (!noteOffSent && i * samplesPerBlock >= noteOffSample ){
-//                 midi.addEvent(juce::MidiMessage::noteOff(1, 60, (juce::uint8)0), 0);
-//                 noteOffSent = true; 
-//             }
+    resolvAppDir();
+    
+    initCtrl();
+    sendSysexChange = true;
+    normalizeDxVelocity = false;
+    sysexComm.listener = this;
+    showKeyboard = true;
+    
+    memset(&voiceStatus, 0, sizeof(VoiceStatus));
+    setEngineType(DEXED_ENGINE_MARKI);
+    
+    controllers.values_[kControllerPitchRangeUp] = 3;
+    controllers.values_[kControllerPitchRangeDn] = 3;
+    controllers.values_[kControllerPitchStep] = 0;
+    controllers.masterTune = 0;
+    
+    loadPreference();
+
+    for (int note = 0; note < MAX_ACTIVE_NOTES; ++note) {
+        voices[note].dx7_note = NULL;
+    }
+    setCurrentProgram(0);    
+    nextMidi = NULL;
+    midiMsg = NULL;
+    
+    mtsClient = NULL;
+    mtsClient = MTS_RegisterClient();
+}
+
+DexedAudioProcessor::~DexedAudioProcessor() {
+    Logger *tmp = Logger::getCurrentLogger();
+	if ( tmp != NULL ) {
+		Logger::setCurrentLogger(NULL);
+		delete tmp;
+	}
+    TRACE("Bye");
+    if (mtsClient) MTS_DeregisterClient(mtsClient);
+}
+
+//==============================================================================
+void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
+    Freqlut::init(sampleRate);
+    Lfo::init(sampleRate);
+    PitchEnv::init(sampleRate);
+    Env::init_sr(sampleRate);
+    Porta::init_sr(sampleRate);
+    fx.init(sampleRate);
+
+    vuDecayFactor = VuMeterOutput::getDecayFactor(sampleRate);
+    
+    for (int note = 0; note < MAX_ACTIVE_NOTES; ++note) {
+        voices[note].dx7_note = new Dx7Note(synthTuningState, mtsClient);
+        voices[note].midi_note = -1;
+        voices[note].keydown = false;
+        voices[note].sustained = false;
+        voices[note].live = false;
+    }
+
+    currentNote = 0;
+    controllers.values_[kControllerPitch] = 0x2000;
+    controllers.modwheel_cc = 0;
+    controllers.foot_cc = 0;
+    controllers.breath_cc = 0;
+    controllers.aftertouch_cc = 0;
+	controllers.refresh();
+
+    sustain = false;
+    extra_buf_size = 0;
+
+    keyboardState.reset();
+    
+    lfo.reset(data + 137);
+    
+    nextMidi = new MidiMessage(0xF0);
+	midiMsg = new MidiMessage(0xF0);
+
+
+
+    if (JUCEApplicationBase::isStandaloneApp())
+    {
+
+        std::pair<std::string, std::string> folders = promptForFolders();
+
+        std::vector<std::string> cartFiles = findFilesWithExtension(folders.first, "syx");
+        std::vector<std::size_t> progHashes;
+        std::cout << "Found " << cartFiles.size() << " carts" << std::endl;
+        for (int ind=0;ind < cartFiles.size();++ind){
+            float perc_done = 100 * (static_cast<float>(ind)/ static_cast<float>(cartFiles.size()));
+
+            std::cout << "Doing catridge render "<< cartFiles[ind] << ":"  << perc_done << std::endl;
             
-//             blockBuffer.clear();
+            //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
+            // doCartridgeRender(progHashes, juce::File(cartFiles[ind]), folders.second, ind);
+            doCartridgeRender(progHashes, juce::File(cartFiles[ind]), folders.second, ind, {32, 50, 60});
+            
+            // break; 
+        }
+        int rendered = findFilesWithExtension(folders.second, "wav").size();
+        std::cout << "Rendered " << rendered << " wav files to " << folders.second << std::endl;
+        // juce::File cartFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+        //                           .getChildFile("Apr2001.SYX");
 
-//             processBlock(blockBuffer, midi);
-//             midi.clear(); 
+        // doCartridgeRender(cartFile);
+        assert (false);
 
-//             for (int ch = 0; ch < numChannels; ++ch) {
-//                 outputBuffer.copyFrom(
-//                     ch, i * samplesPerBlock,
-//                     blockBuffer.getReadPointer(ch),
-//                     samplesPerBlock
-//                 );
-//             }
+    }
 
-//         }
-//         float max = normaliseAudioBuffer(outputBuffer);
-//         if (max > 0) {
-//         // === Write big buffer to WAV ===
-//         juce::String filename = juce::String(outDir) + "/dexed_" + juce::String(ind) + "_" + juce::String(pNum) + ".wav";
-//         juce::File outFile(filename);
-//         // juce::File outFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
-//                                 // .getChildFile("dexed_" + std::to_string(pNum) + ".wav");
-
-//         // std::cout << "Writing to  " << outFile.getFileName() << std::endl;
-//         juce::WavAudioFormat format;
-//         std::unique_ptr<juce::AudioFormatWriter> writer(
-//             format.createWriterFor(outFile.createOutputStream().release(),
-//                                 sampleRate,
-//                                 (unsigned int)numChannels,
-//                                 16,
-//                                 {},
-//                                 0));
-//         // void normaliseAudioBuffer(juce::AudioBuffer<float>& buffer)
-//             if (writer != nullptr) {
-//                 writer->writeFromAudioSampleBuffer(outputBuffer, 0, totalSamples);
-//                 // DBG("Wrote test audio to: " << outFile.getFullPathName());
-//             } else {
-//                 // DBG("Failed to write WAV file");
-//             }
-//         }
-//     }
-// }
-
+}
 
 void DexedAudioProcessor::releaseResources() {
     currentNote = -1;
@@ -716,14 +605,15 @@ void DexedAudioProcessor::processMidiMessage(const MidiMessage *msg) {
         {
             int i = voiceIndex;
             switch(cf0) {
-            case 0xb0:
-                voices[i].mpeTimbre = (int)buf[2];
-                voices[i].dx7_note->mpeTimbre = (int)buf[2];
-                break;
-            case 0xd0:
-                voices[i].mpePressure = (int)buf[1];
-                voices[i].dx7_note->mpePressure = (int)buf[1];
-                break;
+            // THIS IS COMMENTED SINCE mepTimbre and mpePressure is not used
+            // case 0xb0:
+            //     voices[i].mpeTimbre = (int)buf[2];
+            //     voices[i].dx7_note->mpeTimbre = (int)buf[2];
+            //     break;
+            // case 0xd0:
+            //     voices[i].mpePressure = (int)buf[1];
+            //     voices[i].dx7_note->mpePressure = (int)buf[1];
+            //     break;
             case 0xe0:
                 voices[i].mpePitchBend = (int)( buf[1] | (buf[2] << 7) );
                 voices[i].dx7_note->mpePitchBend = (int)( buf[1] | ( buf[2] << 7 ) );
@@ -747,8 +637,6 @@ void DexedAudioProcessor::processMidiMessage(const MidiMessage *msg) {
         case 0xb0 : {
             int ctrl = buf[1];
             int value = buf[2];
-
-
                 switch(ctrl) {
                 case 1:
                     controllers.modwheel_cc = value;
@@ -762,6 +650,9 @@ void DexedAudioProcessor::processMidiMessage(const MidiMessage *msg) {
                     controllers.foot_cc = value;
                     controllers.refresh();
                     break;
+                case 5:
+                    controllers.portamento_cc = value;
+                    break;
                 case 64:
                     sustain = value > 63;
                     if (!sustain) {
@@ -773,6 +664,9 @@ void DexedAudioProcessor::processMidiMessage(const MidiMessage *msg) {
                         }
                     }
                     break;
+                case 65:
+                    controllers.portamento_enable_cc = value >= 64;
+                    break;
                 case 120:
                     panic();
                     break;
@@ -783,16 +677,17 @@ void DexedAudioProcessor::processMidiMessage(const MidiMessage *msg) {
                     }
                     break;
                 default:
-                    TRACE("handle CC %d %d", ctrl, value);
-                    if ( mappedMidiCC.contains(ctrl) ) {
-                        Ctrl *linkedCtrl = mappedMidiCC[ctrl];
+                    TRACE("handle channel %d CC %d = %d", channel, ctrl, value);
+                    int channel_cc = (channel << 8) | ctrl;
+                    if ( mappedMidiCC.contains(channel_cc) ) {
+                        Ctrl *linkedCtrl = mappedMidiCC[channel_cc];
                         
                         // We are not publishing this in the DSP thread, moving that in the
                         // event thread
                         linkedCtrl->publishValueAsync((float) value / 127);
                     }
                     // this is used to notify the dialog that a CC value was received.
-                    lastCCUsed.setValue(ctrl);
+                    lastCCUsed.setValue(channel_cc);
                 }
             }
             return;
@@ -826,12 +721,11 @@ void DexedAudioProcessor::keydown(uint8_t channel, uint8_t pitch, uint8_t velo) 
     if ( normalizeDxVelocity ) {
         velo = ((float)velo) * 0.7874015; // 100/127
     }
+  
 
-    if( controllers.mpeEnabled )
-    {
+    if( controllers.mpeEnabled ) {
         int note = currentNote;
-        for( int i=0; i<MAX_ACTIVE_NOTES; ++i )
-        {
+        for( int i=0; i<MAX_ACTIVE_NOTES; ++i ) {
             if( voices[note].keydown && voices[note].channel == channel )
             {
                 // If we get two keydowns on the same channel we are getting information from a non-mpe device
@@ -851,9 +745,13 @@ void DexedAudioProcessor::keydown(uint8_t channel, uint8_t pitch, uint8_t velo) 
             voices[note].velocity = velo;
             voices[note].sustained = sustain;
             voices[note].keydown = true;
-            voices[note].dx7_note->init(data, pitch, velo, channel);
+            voices[note].dx7_note->init(data, pitch, velo, channel, &controllers);
             if ( data[136] )
                 voices[note].dx7_note->oscSync();
+            if ( (voices[lastActiveVoice].midi_note != -1 && controllers.portamento_enable_cc)
+               && controllers.portamento_cc > 0 ) {
+                voices[note].dx7_note->initPortamento(*voices[lastActiveVoice].dx7_note);
+            }
             break;
         }
         note = (note + 1) % MAX_ACTIVE_NOTES;
@@ -879,6 +777,7 @@ void DexedAudioProcessor::keydown(uint8_t channel, uint8_t pitch, uint8_t velo) 
     }
  
     voices[note].live = true;
+    lastActiveVoice = note;
 	//TRACE("activate %d [ %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d ]", pitch, ACT(voices[0]), ACT(voices[1]), ACT(voices[2]), ACT(voices[3]), ACT(voices[4]), ACT(voices[5]), ACT(voices[6]), ACT(voices[7]), ACT(voices[8]), ACT(voices[9]), ACT(voices[10]), ACT(voices[11]), ACT(voices[12]), ACT(voices[13]), ACT(voices[14]), ACT(voices[15]));
 }
 
@@ -947,6 +846,7 @@ int DexedAudioProcessor::tuningTranspositionShift()
 
 void DexedAudioProcessor::panic() {
     for(int i=0;i<MAX_ACTIVE_NOTES;i++) {
+        voices[i].midi_note = -1;
         voices[i].keydown = false;
         voices[i].live = false;
         if ( voices[i].dx7_note != NULL ) {
@@ -1168,33 +1068,15 @@ void DexedAudioProcessor::updateUI() {
 }
 
 AudioProcessorEditor* DexedAudioProcessor::createEditor() {
-    static const uint8_t HIGH_DPI_THRESHOLD = 128;
     AudioProcessorEditor* editor = new DexedAudioProcessorEditor (this);
     float scaleFactor = getDpiScaleFactor();
+    float maxFactor = DexedAudioProcessorEditor::getLargestScaleFactor();
 
-    if ( scaleFactor == -1 ) {
-        if ( Desktop::getInstance().getDisplays().getPrimaryDisplay()->dpi > HIGH_DPI_THRESHOLD ) {
-            scaleFactor = 1.5;
-        } else {
-            scaleFactor = 1.0;
-        }
+    if ( scaleFactor == -1 || scaleFactor > maxFactor ) {
+        scaleFactor = maxFactor;
     }
-    
-    const juce::Rectangle<int> rect(DexedAudioProcessorEditor::WINDOW_SIZE_X * scaleFactor,DexedAudioProcessorEditor::WINDOW_SIZE_Y * scaleFactor);
-    bool displayFound = false;
-    
-    // validate if there is really a display that can show the complete plugin size
-    for (auto& display : Desktop::getInstance().getDisplays().displays) {
-        if ( display.userArea.getHeight() > rect.getHeight() && display.userArea.getWidth() > rect.getWidth() )
-            displayFound = true;
-    }
-    
-    // no display found, scaling to default value	
-    if ( ! displayFound )
-        setDpiScaleFactor(1.0);
-    else 
-        setDpiScaleFactor(scaleFactor);
-        
+
+    setDpiScaleFactor(scaleFactor);
     return editor;
 }
 
@@ -1391,3 +1273,61 @@ void DexedAudioProcessor::applyKBMMapping(std::string kbmcontents) {
         }
     }
 }
+
+
+
+std::pair<std::string, std::string> DexedAudioProcessor::promptForFolders()
+{
+    namespace fs = std::filesystem;
+    std::string cartridgeFolder;
+    std::string renderFolder;
+
+    // Prompt for cartridge folder
+    while (true)
+    {
+        std::cout << "Enter the path to the cartridge folder: ";
+        std::getline(std::cin, cartridgeFolder);
+
+        fs::path cartridgePath(cartridgeFolder);
+        if (fs::exists(cartridgePath) && fs::is_directory(cartridgePath))
+        {
+            auto syxFiles = findFilesWithExtension(cartridgePath, "syx");
+            if (syxFiles.size() > 0)
+            {
+                std::cout << "Found " << syxFiles.size() << " carts" << std::endl;
+                break;
+            }
+            else
+            {
+                std::cout << "No .syx files found in the folder. Please try again.\n";
+            }
+        }
+        else
+        {
+            std::cout << "Invalid folder path. Please try again.\n";
+        }
+    }
+
+    // Prompt for render folder
+    while (true)
+    {
+        std::cout << "Enter the path to the render output folder: ";
+        std::getline(std::cin, renderFolder);
+
+        fs::path renderPath(renderFolder);
+        if (fs::exists(renderPath) && fs::is_directory(renderPath))
+        {
+            // Create subfolder
+            fs::path renderSubfolder = renderPath / "cartridge_renders";
+            fs::create_directories(renderSubfolder);
+            return { cartridgeFolder, renderSubfolder.string() };
+        }
+        else
+        {
+            std::cout << "Invalid folder path. Please try again.\n";
+        }
+    }
+}
+
+
+

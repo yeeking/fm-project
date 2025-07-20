@@ -115,6 +115,22 @@ float normaliseAudioBuffer(juce::AudioBuffer<float>& buffer)
 }
 
 
+void writeParamsToFile(const std::vector<float>& pluginParams, const std::string& filename) {
+    std::ofstream outFile(filename);
+    if (!outFile) {
+        throw std::runtime_error("Failed to open file: " + filename);
+    }
+
+    for (size_t i = 0; i < pluginParams.size(); ++i) {
+        outFile << pluginParams[i];
+        if (i != pluginParams.size() - 1) {
+            outFile << ",";
+        }
+    }
+    outFile << '\n';
+    outFile.close();
+}
+
 void DexedAudioProcessor::cartToParameterFiles(
 std::vector<std::size_t>& hashedParams,
 juce::File cartFile,
@@ -142,8 +158,9 @@ int cartrideIndForFilename    )
 
         juce::String name = this->getProgramName(pNum);
 
-        juce::String filename = juce::String(outDir) + "/dexed_" + juce::String(cartrideIndForFilename) + "_" + juce::String(pNum) + "_" + name + ".txt";
-        juce::File outFile(filename);
+        // juce::String filename = juce::String(outDir) + "/dexed_" + juce::String(cartrideIndForFilename) + "_" + juce::String(pNum) + "_" + name + ".txt";
+        juce::String filename = juce::String(outDir) + "/dexed_" + juce::String(cartrideIndForFilename) + "_" + juce::String(pNum) + ".txt";
+
 
         std::vector<float> pluginParams;
         for (int pInd = 0; pInd < this->getNumParameters(); ++pInd){
@@ -151,6 +168,9 @@ int cartrideIndForFilename    )
             pluginParams.push_back(this->getParameter(pInd));
             
         }
+        writeParamsToFile(pluginParams, filename.toStdString());
+
+  
         std::cout << "Saving params to file " << filename << std::endl;
     }
 }
@@ -385,7 +405,7 @@ void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
     nextMidi = new MidiMessage(0xF0);
 	midiMsg = new MidiMessage(0xF0);
 
-
+    // MYK stuff
 
     if (JUCEApplicationBase::isStandaloneApp())
     {
@@ -401,8 +421,8 @@ void DexedAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
             std::cout << "Doing catridge render "<< cartFiles[ind] << ":"  << perc_done << std::endl;
             
             //doCartridgeRender(std::vector<std::string>& doneNames, juce::File cartFile, std::string outDir, int ind )
-            // doCartridgeRender(progHashes, juce::File(cartFiles[ind]), folders.second, ind);
             doCartridgeRender(progHashes, juce::File(cartFiles[ind]), folders.second, ind, {32, 50, 60});
+            // cartToParameterFiles(progHashes, juce::File(cartFiles[ind]), folders.second, ind);
             
             // break; 
         }

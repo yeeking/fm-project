@@ -6,12 +6,21 @@ import sys
 import jack
 import numpy as np
 
-def encode_decode(model, input):
-    latent = model.encode(input)
-    # mess with the latent 
-    output = model.decode(latent)
-    # x = x_hat.cpu().numpy().reshape(-1, 2)  # ensure stereo shape
-    return output 
+import torch
+
+def encode_decode(model, input_chunk:np.array):
+    # Assumes input_chunk is 1D np.float32 array of length N    
+    x = torch.from_numpy(input_chunk).float().unsqueeze(0).unsqueeze(0)  # shape [1, 1, N]
+    x = x.expand(1, 2, -1)  # shape [1, 2, N] -> stereo via duplication
+
+    with torch.no_grad():
+        latent = model.encode(x)
+        # Optionally modify latent here
+        x_hat = model.decode(latent)
+
+    output = x_hat.squeeze().cpu().numpy()  # shape [N]
+    return output
+
     
 def setup_device():
     if torch.cuda.is_available():
@@ -40,8 +49,9 @@ def get_latent_shape(model, device):
     z = torch.randn(B, C, 2048, device=device)
 
 
-def setup_audio():
+def setup_audio(rave_block_size=8192):
     client = jack.Client("white_noise_io")
+
 
     # Register ports
     outport = client.outports.register("output")
@@ -49,14 +59,33 @@ def setup_audio():
 
     @client.set_process_callback
     def process(frames):
-        # Generate and write white noise to output
-        noise = np.random.uniform(-0.2, 0.2, frames).astype(np.float32)
-        outport.get_buffer()[:] = noise
+        input_data = np.frombuffer(inport.get_buffer(), dtype=np.float32).copy()
 
-        # Read from input, calculate abs mean
-        input_data = np.copy(inport.get_buffer())
-        abs_mean = np.abs(input_data).mean()
-        # print(f"Input abs mean: {abs_mean:.5f}")
+        print(f"{input_data}")
+        print(f"Tpye of input data {type(input_data)} len {input_data.shape}")
+        # # Optional: buffer up frames until we have enough
+        if input_data.shape[0] < rave_block_size:
+            # zero-pad or maintain a ring buffer, here's a quick zero-pad version:
+            padded = np.zeros(rave_block_size, dtype=np.float32)
+            print(f"Padded: {len(padded)} input: {len(input_data)} frames {frames}")
+            padded[:frames] = input_data
+            input_data = padded
+
+        output_data = encode_decode(model, input_data)
+
+        # # Crop if model output is longer than JACK buffer
+        out = output_data[:frames] if len(output_data) >= frames else np.pad(output_data, (0, frames - len(output_data)))
+        print(f"Out shape {out.shape}")
+        outport.get_buffer()[:] = out
+
+
+    # @client.set_process_callback
+    # def process(frames):
+    #     input_data = np.copy(inport.get_buffer())
+    #     output_data = encode_decode(model, input_data)
+    #     outport.get_buffer()[:] = output_data
+
+    #     # noise = np.random.uniform(-0.2, 0.2, frames).astype(np.float32)
 
     @client.set_shutdown_callback
     def shutdown(status, reason):
@@ -69,6 +98,7 @@ model = setup_model(device)
 latent_shape = get_latent_shape(model, device)
 client, inport, outport = setup_audio()
 # Activate client and connect ports
+
 with client:
     try:
         # Auto-connect output to system playback, input to system capture

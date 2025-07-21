@@ -61,31 +61,24 @@ def setup_audio(rave_block_size=8192):
     def process(frames):
         input_data = np.frombuffer(inport.get_buffer(), dtype=np.float32).copy()
 
-        print(f"{input_data}")
-        print(f"Tpye of input data {type(input_data)} len {input_data.shape}")
+        # print(f"{input_data}")
+        # print(f"Tpye of input data {type(input_data)} len {input_data.shape}")
         # # Optional: buffer up frames until we have enough
         if input_data.shape[0] < rave_block_size:
             # zero-pad or maintain a ring buffer, here's a quick zero-pad version:
             padded = np.zeros(rave_block_size, dtype=np.float32)
-            print(f"Padded: {len(padded)} input: {len(input_data)} frames {frames}")
+            # print(f"Padded: {len(padded)} input: {len(input_data)} frames {frames}")
             padded[:frames] = input_data
             input_data = padded
 
         output_data = encode_decode(model, input_data)
-
+        # print(f"Received output from model {output_data.shape} out buffer shape {np.frombuffer(outport.get_buffer(), dtype=np.float32).shape}")
         # # Crop if model output is longer than JACK buffer
-        out = output_data[:frames] if len(output_data) >= frames else np.pad(output_data, (0, frames - len(output_data)))
-        print(f"Out shape {out.shape}")
-        outport.get_buffer()[:] = out
+        # out = output_data[:frames] if len(output_data) >= frames else np.pad(output_data, (0, frames - len(output_data)))
+        # print(f"Out shape {out.shape}")
 
+        outport.get_buffer()[:] = output_data[0][:frames]
 
-    # @client.set_process_callback
-    # def process(frames):
-    #     input_data = np.copy(inport.get_buffer())
-    #     output_data = encode_decode(model, input_data)
-    #     outport.get_buffer()[:] = output_data
-
-    #     # noise = np.random.uniform(-0.2, 0.2, frames).astype(np.float32)
 
     @client.set_shutdown_callback
     def shutdown(status, reason):

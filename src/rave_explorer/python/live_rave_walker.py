@@ -10,15 +10,25 @@ import threading
 
 import signal 
 
-def encode_decode(model, input_chunk:np.array):
-    # Assumes input_chunk is 1D np.float32 array of length N    
-    x = torch.from_numpy(input_chunk).float().unsqueeze(0).unsqueeze(0)  # shape [1, 1, N]
-    x = x.expand(1, 2, -1)  # shape [1, 2, N] -> stereo via duplication
+from enum import Enum, auto
 
+class RaveMode(Enum):
+    WALK = auto()
+    LIVE = auto()
+
+def encode_decode(model, input_chunk:np.array, mode:RaveMode, latent_vec):
+    # Assumes input_chunk is 1D np.float32 array of length N    
+    
     # print(f"Input shape is {x.shape}")
     with torch.no_grad():
-        latent = model.encode(x)
-        print(f"Latent shaoe {latent.shape} {latent.dtype}")
+        if mode == RaveMode.LIVE:
+            x = torch.from_numpy(input_chunk).float().unsqueeze(0).unsqueeze(0)  # shape [1, 1, N]
+            x = x.expand(1, 2, -1)  # shape [1, 2, N] -> stereo via duplication
+            latent = model.encode(x)
+        if mode == RaveMode.WALK:
+            # Latent shape torch.Size([1, 8, 4])
+            assert latent_vec.shape == (1,8,4), f"Want shape (1,8,4) but got {latent_vec.shape}"
+            latent = latent_vec
         # Optionally modify latent here
         latent = latent + np.random.random()
         x_hat = model.decode(latent)
@@ -48,13 +58,13 @@ def setup_model(device):
     model = torch.jit.load(model_file).eval().to(device)  # or .cpu()
     return model 
 
-def get_latent_shape(model, device):
-    dummy = torch.zeros(1, 2, 44100 * 1)  # 1 second stereo
-    z = model.encode(dummy.to(device))
-    B, C, T = z.shape
-    print(f'Model latent shape {z.shape} with {C} control dimensions')
+# def get_latent_shape(model, device):
+#     dummy = torch.zeros(1, 2, 44100 * 1)  # 1 second stereo
+#     z = model.encode(dummy.to(device))
+#     B, C, T = z.shape
+#     print(f'Model latent shape {z.shape} with {C} control dimensions')
     
-    z = torch.randn(B, C, 2048, device=device)
+#     z = torch.randn(B, C, 2048, device=device)
 
 
 def init_jack():
@@ -68,7 +78,8 @@ def init_jack():
 
     @client.set_process_callback
     def process(frames):
-        global rave_buff_pos, rave_input_buff, rave_output_buff
+        global rave_buff_pos, rave_input_buff, rave_output_buff, random_latents, latent_pos, RaveMode
+
         in_buf = jack_in.get_array()
         out_buf = jack_out.get_array()  # NumPy array view of the buffer
         
@@ -87,9 +98,11 @@ def init_jack():
         
         rave_buff_pos = (rave_buff_pos + in_buf.size) % rave_block_size
         if rave_buff_pos == 0: 
-            # print(f"Pos is {rave_buff_pos}: ready to infer")
+            print(f"Latent is {latent_pos}: ready to infer")
             # ready to process
-            rave_output_buff =   encode_decode(model, rave_input_buff)
+            rave_output_buff =   encode_decode(model, rave_input_buff, mode=RaveMode.WALK, latent_vec=random_latents[latent_pos].unsqueeze(0))
+            
+            latent_pos = (latent_pos + 1) % random_latents.shape[0]
     
     return client, jack_in, jack_out
 
@@ -114,11 +127,14 @@ signal.signal(signal.SIGINT, lambda *args: stop.set())
 
 device = setup_device()
 model = setup_model(device)
-latent_shape = get_latent_shape(model, device)
+# latent_shape = get_latent_shape(model, device)
 
-rave_block_size=8192 
-# rave_block_size=4096
 
+random_latents = torch.rand(5, 8, 4, dtype=torch.float32, device=device)
+
+latent_pos = 0
+
+rave_block_size=8192
 rave_input_buff = np.zeros(rave_block_size)
 rave_output_buff = np.zeros((2, rave_block_size))
 rave_buff_pos = 0
@@ -130,7 +146,7 @@ client.activate()
 
 wire_jack(client, jack_in, jack_out)
 
-print(f"Sending RAVE to '{client.name}:output' (fs={client.samplerate} Hz). Press Ctrl+C to quit.")
+print(f"Sending RAVE signal to '{client.name}:output' (fs={client.samplerate} Hz). Press Ctrl+C to quit.")
 
 try:
     while not stop.is_set():

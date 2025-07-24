@@ -5,20 +5,26 @@ import os
 import sys
 import jack
 import numpy as np
+import time
+import threading 
 
-import torch
+import signal 
 
 def encode_decode(model, input_chunk:np.array):
     # Assumes input_chunk is 1D np.float32 array of length N    
     x = torch.from_numpy(input_chunk).float().unsqueeze(0).unsqueeze(0)  # shape [1, 1, N]
     x = x.expand(1, 2, -1)  # shape [1, 2, N] -> stereo via duplication
-
+    print(f"Input shape is {x.shape}")
     with torch.no_grad():
-        latent = model.encode(x)
+        # latent = model.encode(x)
+        # print(f"Latent share {latent.shape}")
         # Optionally modify latent here
-        x_hat = model.decode(latent)
+        # x_hat = model.decode(latent)
+        x_hat = model.forward(x)
+        
 
     output = x_hat.squeeze().cpu().numpy()  # shape [N]
+    print(f"encode decode done.")
     return output
 
     
@@ -49,72 +55,65 @@ def get_latent_shape(model, device):
     z = torch.randn(B, C, 2048, device=device)
 
 
-def setup_audio(rave_block_size=8192):
-    client = jack.Client("white_noise_io")
-
-
-    # Register ports
-    outport = client.outports.register("output")
-    inport = client.inports.register("input")
-
-    @client.set_process_callback
-    def process(frames):
-        input_data = np.frombuffer(inport.get_buffer(), dtype=np.float32).copy()
-
-        # print(f"{input_data}")
-        # print(f"Tpye of input data {type(input_data)} len {input_data.shape}")
-        # # Optional: buffer up frames until we have enough
-        if input_data.shape[0] < rave_block_size:
-            # zero-pad or maintain a ring buffer, here's a quick zero-pad version:
-            padded = np.zeros(rave_block_size, dtype=np.float32)
-            # print(f"Padded: {len(padded)} input: {len(input_data)} frames {frames}")
-            padded[:frames] = input_data
-            input_data = padded
-
-        output_data = encode_decode(model, input_data)
-        # print(f"Received output from model {output_data.shape} out buffer shape {np.frombuffer(outport.get_buffer(), dtype=np.float32).shape}")
-        # # Crop if model output is longer than JACK buffer
-        # out = output_data[:frames] if len(output_data) >= frames else np.pad(output_data, (0, frames - len(output_data)))
-        # print(f"Out shape {out.shape}")
-
-        outport.get_buffer()[:] = output_data[0][:frames]
-
-
-    @client.set_shutdown_callback
-    def shutdown(status, reason):
-        print(f"JACK shutdown: {reason}")
-        exit(1)
-    return client, inport, outport
 
 device = setup_device()
 model = setup_model(device)
 latent_shape = get_latent_shape(model, device)
-client, inport, outport = setup_audio()
-# Activate client and connect ports
 
-with client:
-    try:
-        # Auto-connect output to system playback, input to system capture
-        playback_ports = client.get_ports(is_physical=True, is_input=True)
-        capture_ports = client.get_ports(is_physical=True, is_output=True)
-        if playback_ports:
-            outport.connect(playback_ports[0])
-        if capture_ports:
-            inport.connect(capture_ports[0])
+# Create the JACK client
+client = jack.Client("noise_sender")
+# Register a single output port
+jack_out = client.outports.register("output")
+jack_in = client.inports.register("input")
+# Auto-connect output to system playback, input to system capture
 
-        print("Running. Press Ctrl+C to stop.")
-        import time
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Exiting...")
+stop = threading.Event()
+signal.signal(signal.SIGINT, lambda *args: stop.set())
+
+rave_block_size=8192
+
+@client.set_process_callback
+def process(frames):
+    # this bit runs once the script is trying to stop
+    # it prevents any further calls to the torch layer which can cause blocks on exit
+    if stop.is_set():
+        jack_out.get_array()[:] = 0
+        return 0
+    # normal mode: call out to torch 
+    in_buf = jack_in.get_array()
+    if in_buf.shape[0] < rave_block_size:
+        padded = np.zeros(rave_block_size, dtype=np.float32)
+        padded[:frames] = in_buf
+        in_buf = padded 
+    output_data = encode_decode(model, in_buf)
+    buf = jack_out.get_array()  # NumPy array view of the buffer
+    buf[:] = (np.random.rand(frames) * 2 - 1).astype(np.float32) * 0.1
+
+    # out.get_buffer()[:] = output_data[0][:frames]
 
 
+# Thread-safe signal to stop
+stop = threading.Event()
+signal.signal(signal.SIGINT, lambda *args: stop.set())
 
-# Determine latent shape by passing a dummy input through the encoder
-# Note: skip this if you already know latent shape, e.g. (B, C, T)
+client.activate()
+playback_ports = client.get_ports(is_physical=True, is_input=True)
+capture_ports = client.get_ports(is_physical=True, is_output=True)
+if playback_ports:
+    jack_out.connect(playback_ports[0])
+if capture_ports:
+    jack_in.connect(capture_ports[0])
 
-# Decode latent to waveform
-# with torch.no_grad():
+print(f"Sending noise to '{client.name}:output' (fs={client.samplerate} Hz). Press Ctrl+C to quit.")
+
+
+try:
+    while not stop.is_set():
+        time.sleep(0.1)
+finally:
+    time.sleep(0.5) # wait for any existing call to encode_decode to exit
+    client.deactivate()
+    client.close()
+    print("Clean shutdown.")
 
 

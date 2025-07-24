@@ -14,7 +14,7 @@ def encode_decode(model, input_chunk:np.array):
     # Assumes input_chunk is 1D np.float32 array of length N    
     x = torch.from_numpy(input_chunk).float().unsqueeze(0).unsqueeze(0)  # shape [1, 1, N]
     x = x.expand(1, 2, -1)  # shape [1, 2, N] -> stereo via duplication
-    print(f"Input shape is {x.shape}")
+    # print(f"Input shape is {x.shape}")
     with torch.no_grad():
         # latent = model.encode(x)
         # print(f"Latent share {latent.shape}")
@@ -24,7 +24,7 @@ def encode_decode(model, input_chunk:np.array):
         
 
     output = x_hat.squeeze().cpu().numpy()  # shape [N]
-    print(f"encode decode done.")
+    # print(f"encode decode done.")
     return output
 
     
@@ -72,30 +72,46 @@ signal.signal(signal.SIGINT, lambda *args: stop.set())
 
 rave_block_size=8192
 
+rave_input_buff = np.zeros(rave_block_size)
+rave_output_buff = np.zeros((2, rave_block_size))
+rave_buff_pos = 0
+
+print(f"Rave buffer pos: {rave_buff_pos}")
+
 @client.set_process_callback
 def process(frames):
+    global rave_buff_pos, rave_input_buff, rave_output_buff
+    in_buf = jack_in.get_array()
+    out_buf = jack_out.get_array()  # NumPy array view of the buffer
+   
+    # print(f"Process: rave pos {rave_buff_pos}")
+    
     # this bit runs once the script is trying to stop
     # it prevents any further calls to the torch layer which can cause blocks on exit
     if stop.is_set():
         jack_out.get_array()[:] = 0
         return 0
     # normal mode: call out to torch 
-    in_buf = jack_in.get_array()
-    if in_buf.shape[0] < rave_block_size:
-        padded = np.zeros(rave_block_size, dtype=np.float32)
-        padded[:frames] = in_buf
-        in_buf = padded 
-    output_data = encode_decode(model, in_buf)
-    buf = jack_out.get_array()  # NumPy array view of the buffer
-    buf[:] = (np.random.rand(frames) * 2 - 1).astype(np.float32) * 0.1
-
-    # out.get_buffer()[:] = output_data[0][:frames]
+    # copy latest into input buffer
+    rave_input_buff[rave_buff_pos : rave_buff_pos + in_buf.size] = in_buf
+    # copy from output 
+    # buf[:] = (np.random.rand(frames) * 2 - 1).astype(np.float32) * 0.1
+    # print(f"Output buffer shape is {rave_output_buff.shape}")
+    out_buf[:] = rave_output_buff[0][rave_buff_pos:rave_buff_pos + in_buf.size]
+    
+    rave_buff_pos = (rave_buff_pos + in_buf.size) % rave_block_size
+    if rave_buff_pos == 0: 
+        # print(f"Pos is {rave_buff_pos}: ready to infer")
+        # ready to process
+        rave_output_buff =   encode_decode(model, rave_input_buff)
+    
 
 
 # Thread-safe signal to stop
 stop = threading.Event()
 signal.signal(signal.SIGINT, lambda *args: stop.set())
 
+print(f"Activating client {rave_buff_pos}")
 client.activate()
 playback_ports = client.get_ports(is_physical=True, is_input=True)
 capture_ports = client.get_ports(is_physical=True, is_output=True)
